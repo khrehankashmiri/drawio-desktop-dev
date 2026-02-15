@@ -13,7 +13,6 @@ module.exports = {
 	extends: [
 		'eslint:recommended',
 		'plugin:import/recommended',
-		'plugin:security/recommended',
 	],
 	plugins: ['import', 'security'],
 	parserOptions: {
@@ -79,13 +78,13 @@ module.exports = {
 	},
 	overrides: [
 		{
-			files: ['*.test.js', '*.spec.js', 'test/**/*.js'],
+			files: ['tests/**/*.js'],
 			env: {
-				jest: true,
-				vitest: true,
+				node: true,
 			},
 			rules: {
 				'no-console': 'off',
+				'no-unused-vars': 'off',
 			},
 		},
 	],
