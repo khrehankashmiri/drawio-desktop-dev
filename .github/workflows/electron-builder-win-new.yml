@@ -1,0 +1,164 @@
+name: Electron Builder CI (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - dev
+      - release
+
+jobs:
+  security-audit:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Run security audit
+      run: |
+        npm ci
+        npm audit --audit-level=high
+      continue-on-error: true
+
+    - name: Run ESLint
+      run: npm run lint
+      continue-on-error: true
+
+  test:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run type checking
+      run: npm run typecheck
+      continue-on-error: true
+
+    - name: Run unit tests
+      run: npm test
+
+  build:
+    needs: [security-audit, test]
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REF: ${{ github.ref }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Checkout drawio-dev
+      uses: actions/checkout@v4
+      with:
+        repository: jgraph/drawio-dev
+        token: ${{ secrets.GH_TOKEN }}
+        ref: release
+        path: drawio-dev
+        submodules: false
+
+    - name: Get drawio Tag & Submodules
+      run: |
+        cd drawio-dev
+        $tmp=$Env:GH_REF -replace '/v','/diagramly-' -replace '[.]','_'
+        $ref=$tmp+':'+$tmp
+        git fetch origin $ref --no-tags
+        $tmp=$tmp -replace 'refs/',''
+        git checkout $tmp -b tmp-deploy
+        Copy-Item -Path "src\main\webapp\js\*.min.js" -Destination "..\drawio\src\main\webapp\js\"
+        cd ..
+        Remove-Item 'drawio-dev' -Recurse -Force
+        cd drawio
+        Remove-Item 'docs','etc','src\main\java','src\main\webapp\connect','src\main\webapp\service-worker*','src\main\webapp\workbox-*' -Recurse -Force
+        cd src\main\webapp\js
+        Remove-Item 'atlas-viewer.min.js','atlas.min.js','cryptojs','deflate','dropbox','embed*','freehand','integrate.min.js','jquery','jszip','mermaid','onedrive','orgchart','reader.min.js','rough','sanitizer','simplepeer','spin','viewer-static.min.js','viewer.min.js' -Recurse -Force
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Install dependencies
+      run: |
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+        npm ci
+
+    - name: Run smoke tests
+      run: |
+        npm run sync
+        npm run lint
+        npm test
+
+    - name: Build for Windows (x32 & arm64)
+      env:
+        CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      run: |
+        npm run sync -- disableUpdate
+        npm run release-win32
+        npm run release-win-arm64
+
+    - name: Build for Windows (x64)
+      env:
+        CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      run: |
+        npm run sync
+        npm run release-win
+
+    - name: Build unpacked Windows x64 (for zip portable)
+      run: |
+        npm run sync -- disableUpdate
+        npx electron-builder --win --x64 --dir
+
+    - name: Zip unpacked x64 build
+      run: |
+        $version = "${{ github.ref }}" -replace 'refs/tags/v', ''
+        cd dist
+        7z a "draw.io-$version-windows.zip" ".\win-unpacked\*"
+
+    - name: Build for Windows (APPX)
+      run: |
+        npm run sync -- disableUpdate
+        npm run release-appx
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-windows
+        path: dist/*
+        retention-days: 7
+
+    - name: Install GitHub CLI
+      run: |
+        Invoke-WebRequest -Uri https://github.com/cli/cli/releases/download/v2.73.0/gh_2.73.0_windows_amd64.msi -OutFile ghcli.msi
+        Start-Process msiexec.exe -ArgumentList '/i', 'ghcli.msi', '/quiet', '/norestart' -Wait
+
+    - name: Upload portable zip to GitHub Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $version = "${{ github.ref }}" -replace 'refs/tags/v', ''
+        gh release upload "v$version" "dist/draw.io-$version-windows.zip" --clobber
